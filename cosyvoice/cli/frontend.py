@@ -21,6 +21,7 @@ import whisper
 from typing import Callable
 import torchaudio.compliance.kaldi as kaldi
 import torchaudio
+import hashlib
 import os
 import re
 import inflect
@@ -154,9 +155,8 @@ class CosyVoiceFrontEnd:
         model_input = {'text': tts_text_token, 'text_len': tts_text_token_len, 'llm_embedding': embedding, 'flow_embedding': embedding}
         return model_input
 
-    def frontend_zero_shot(self, tts_text, prompt_text, prompt_speech_16k, resample_rate):
-        tts_text_token, tts_text_token_len = self._extract_text_token(tts_text)
-        prompt_text_token, prompt_text_token_len = self._extract_text_token(prompt_text)
+    def get_speaker_feature(self, prompt_text, prompt_speech_16k, resample_rate):
+        prompt_text_token, prompt_text_token_len = self._extract_text_token(prompt_text) 
         prompt_speech_resample = torchaudio.transforms.Resample(orig_freq=16000, new_freq=resample_rate)(prompt_speech_16k)
         speech_feat, speech_feat_len = self._extract_speech_feat(prompt_speech_resample)
         speech_token, speech_token_len = self._extract_speech_token(prompt_speech_16k)
@@ -166,13 +166,27 @@ class CosyVoiceFrontEnd:
             speech_feat, speech_feat_len[:] = speech_feat[:, :2 * token_len], 2 * token_len
             speech_token, speech_token_len[:] = speech_token[:, :token_len], token_len
         embedding = self._extract_spk_embedding(prompt_speech_16k)
-        model_input = {'text': tts_text_token, 'text_len': tts_text_token_len,
+        model_input = {#'text': tts_text_token, 'text_len': tts_text_token_len,
                        'prompt_text': prompt_text_token, 'prompt_text_len': prompt_text_token_len,
                        'llm_prompt_speech_token': speech_token, 'llm_prompt_speech_token_len': speech_token_len,
                        'flow_prompt_speech_token': speech_token, 'flow_prompt_speech_token_len': speech_token_len,
                        'prompt_speech_feat': speech_feat, 'prompt_speech_feat_len': speech_feat_len,
                        'llm_embedding': embedding, 'flow_embedding': embedding}
         return model_input
+
+    def frontend_zero_shot(self, tts_text, prompt_text, prompt_speech_16k, resample_rate):
+        spkdir = os.path.join('speaker_cache',hashlib.md5(prompt_speech_16k.cpu().numpy().tobytes()).hexdigest()+'.pt')
+        try:
+            assert os.path.exists(spkdir)
+            feature=torch.load(spkdir)
+        except:
+            feature=self.get_speaker_feature(prompt_text, prompt_speech_16k, resample_rate)
+            os.makedirs('speaker_cache',exist_ok=True)
+            torch.save(feature,spkdir)
+        tts_text_token, tts_text_token_len = self._extract_text_token(tts_text)
+        feature['text']=tts_text_token
+        feature['text_len']=tts_text_token_len   
+        return feature
 
     def frontend_cross_lingual(self, tts_text, prompt_speech_16k, resample_rate):
         model_input = self.frontend_zero_shot(tts_text, '', prompt_speech_16k, resample_rate)
